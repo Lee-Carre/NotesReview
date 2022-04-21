@@ -78,6 +78,10 @@ function listener() {
   });
   document.getElementById('cancel').addEventListener('click', () => Request.cancel());
 
+  document.querySelectorAll('.reset-trigger').forEach(element => {
+    element.addEventListener('click', () => query.reset());
+  });
+
   document.getElementById('login').addEventListener('click', () => {
     const login = document.getElementById('login');
     login.classList.add('loading');
@@ -168,14 +172,15 @@ function listener() {
     // Remove the iframe in order to prevent a restoring of the content when reloading the page
     document.getElementById('remote').remove();
 
-    // Save the state of the view
+    // Save the current state of the map and query which will be restored when visiting the page again
     const center = map.center();
     Preferences.set({
       view: ui.view,
       map: {
         center: [center.lat, center.lng],
         zoom: map.zoom()
-      }
+      },
+      query: query.data
     });
   });
 
@@ -270,14 +275,19 @@ function settings() {
   await Localizer.init();
   Modal.init();
 
-  const parameter = new URL(window.location.href).searchParams;
+  let parameter = new URL(window.location.href).searchParams;
   // Remove the query parameters to have a cleaner looking URL
   const uri = window.location.toString();
   if (uri.indexOf('?') > 0) {
     window.history.replaceState({}, document.title, uri.substring(0, uri.indexOf('?')));
   }
 
-  // Get the desired position from the search parameters or the local storage
+  const view = parameter.get('view') || Preferences.get('view');
+  document.querySelector(`#toggle-view div[data-view="${view}"]`).classList.remove('d-hide');
+  document.querySelector(`#${view}`).classList.remove('d-hide');
+  document.body.dataset.view = view;
+
+  // Get the desired centered position from the search parameters or the local storage
   const position =
     (parameter.has('map') && /.+\/.+\/.+/.test(parameter.get('map')) ?
       (p => {
@@ -289,7 +299,23 @@ function settings() {
     ||
     Preferences.get('map');
 
-  map = new Leaflet('map-container', position);
+  // Get the desired bounds from the search parameters (will override the position retrieved above)
+  const bounds =
+    (parameter.has('bbox') && /.+,.+,.+,.+/.test(parameter.get('bbox')) ?
+      parameter.get('bbox').split(',')
+      : null);
+
+  // Convert the URL search parameters to an object for further usage
+  parameter = [...parameter.entries()].reduce(
+    (object, [key, value]) => Object.assign(object, {[key]: value}),
+    {}
+  );
+
+  // If there are no parameters available, use the query saved in the preferences,
+  // which is the last used query before the page was closed the last time
+  parameter = Object.keys(parameter).length > 0 ? parameter : Preferences.get('query');
+
+  map = new Leaflet('map-container', position, bounds);
   query = new Query(map, parameter);
   const permalink = new Permalink(query); // eslint-disable-line no-unused-vars
 
@@ -304,16 +330,10 @@ function settings() {
     document.getElementById('logout').classList.add('d-hide');
   }
 
-  listener();
-  settings();
-
-  const view = parameter.get('view') || Preferences.get('view');
-  document.querySelector(`#toggle-view div[data-view="${view}"]`).classList.remove('d-hide');
-  document.querySelector(`#${view}`).classList.remove('d-hide');
-  document.body.dataset.view = view;
-
   const { default: UI } = await import('./ui/ui.js');
   ui = new UI(view);
 
+  listener();
+  settings();
   search();
 })();

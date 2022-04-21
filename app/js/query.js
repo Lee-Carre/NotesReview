@@ -29,20 +29,20 @@ const ORDER = {
   ASCENDING: 'ascending'
 };
 
+// Default values which can be removed from the query string if needed.
+// Values which are null by default are not included, because they are removed in a different step.
 const DEFAULTS = {
-  PERMALINK: {
+  UI: {
     'apply-bbox': false,
-    bbox: null,
     limit: 50,
     status: STATUS.OPEN,
     anonymous: ANONYMOUS.INCLUDE,
-    // Specific permalink values which are not send to the API
+    // Specific frontend values which are not send to the API but transformed to another value before
     sort: `${SORT.CREATED_AT}:${ORDER.DESCENDING}`,
     uncommented: false
   },
   API: {
     'apply-bbox': false,
-    bbox: null,
     limit: 50,
     status: STATUS.ALL,
     anonymous: ANONYMOUS.INCLUDE,
@@ -58,32 +58,27 @@ export default class Query {
     *
     * @constructor
     * @param {Leaflet} map Current Leaflet map instance
-    * @param {URLSearchParams} parameter Search parameters of the URL to initialize the query with
+    * @param {Object} values Default values to initialize the query with
     */
-  constructor(map, parameter) {
+  constructor(map, values) {
     this.map = map;
     this.data = {};
     this.history = [];
 
     this.input = [{
       id: 'query',
-      permalink: 'query',
       handler: this.query
     }, {
       id: 'bbox',
-      permalink: 'bbox',
       handler: this.bbox
     }, {
       id: 'apply-bbox',
-      permalink: 'apply-bbox',
       handler: this.applyBBox
     }, {
       id: 'limit',
-      permalink: 'limit',
       handler: this.limit
     }, {
       id: 'status',
-      permalink: 'status',
       handler: this.status
     }, {
       id: 'user',
@@ -91,15 +86,12 @@ export default class Query {
       handler: this.author
     }, {
       id: 'anonymous',
-      permalink: 'anonymous',
       handler: this.anonymous
     }, {
       id: 'from',
-      permalink: 'from',
       handler: this.after
     }, {
       id: 'to',
-      permalink: 'to',
       handler: this.before
     }, {
       id: 'only-uncommented',
@@ -107,10 +99,10 @@ export default class Query {
       handler: this.uncommented
     }, {
       id: 'sort',
-      permalink: 'sort',
       handler: this.sort
     }];
 
+    // Add event listeners to every input field
     this.input.forEach(input => {
       const element = document.getElementById(input.id);
 
@@ -125,24 +117,52 @@ export default class Query {
       element.addEventListener('input', update);
       // This event is triggered at the end of the action
       element.addEventListener('change', update);
-
-      // If the corresponding search parameter for an input is available, try to set it
-      if (parameter.has(input.permalink)) {
-        const value = parameter.get(input.permalink);
-        element.type === 'checkbox' ? element.checked = (value === 'true') : element.value = value; // eslint-disable-line no-unused-expressions
-      }
-
-      // Call the handler by triggering a new change event on the element
-      element.dispatchEvent(new Event('change'));
     }, this);
+
+    this.values = values;
 
     // Update the input which stores the current bounding box when moving the map
     // This triggers the assigned handler via the function implemented above
     this.map.onMove(() => {
       const bbox = document.getElementById('bbox');
-      bbox.value = this.map.bounds().toBBoxString();
+      const bounds = this.map.bounds();
+      bbox.value = [
+        bounds.getWest().toFixed(4), bounds.getSouth().toFixed(4),
+        bounds.getEast().toFixed(4), bounds.getNorth().toFixed(4)
+      ].join(',');
       bbox.dispatchEvent(new Event('change'));
     });
+  }
+
+  /**
+    * Set the values of the input fields
+    *
+    * @function
+    * @param {Object} values
+    * @returns {void}
+    */
+  set values(values) {
+    this.input.forEach(input => {
+      const element = document.getElementById(input.id);
+
+      // If the corresponding value for an input field is available, try to set it
+      const key = 'permalink' in input ? input.permalink : input.id;
+      const value = values.hasOwnProperty(key) ? values[key] : (DEFAULTS.UI[key] || null);
+      element.type === 'checkbox' ? element.checked = (value === true || value === 'true') : element.value = value; // eslint-disable-line no-unused-expressions
+
+      // Call the handler by triggering a new change event on the element
+      element.dispatchEvent(new Event('change'));
+    }, this);
+  }
+
+  /**
+    * Reset the query to default values
+    *
+    * @function
+    * @returns {void}
+    */
+  reset() {
+    this.values = DEFAULTS.UI;
   }
 
   /**
@@ -295,6 +315,7 @@ export default class Query {
     * @returns {Query}
     */
   uncommented(uncommented) {
+    this.data.uncommented = uncommented;
     this.comments(uncommented ? 0 : null);
     return this;
   }
@@ -310,6 +331,7 @@ export default class Query {
     const [ sort_by, order ] = sort.split(':'); // eslint-disable-line camelcase
     this.data.sort_by = sort_by; // eslint-disable-line camelcase
     this.data.order = order;
+    this.data.sort = sort;
     return this;
   }
 
@@ -323,8 +345,13 @@ export default class Query {
     const url = new URL(`${NOTESREVIEW_API_URL}/search`);
 
     const data = Object.assign({}, this.data);
-    // Don't use the bounding box if the user wants to do a global search
+
+    // Do not use the bounding box if the user wants to do a global search
     data['apply-bbox'] ? null : delete data.bbox; // eslint-disable-line no-unused-expressions
+
+    // Remove unused properties that are already set by another value
+    delete data.uncommented;
+    delete data.sort;
 
     url.search = Request.encodeQueryData(Util.clean(data, DEFAULTS.API));
     return url.toString();
@@ -343,13 +370,12 @@ export default class Query {
     const data = Object.assign({
       view: document.body.dataset.view,
       map: `${this.map.zoom()}/${this.map.center().lat}/${this.map.center().lng}`,
-    }, this.data, {
-      uncommented: this.data.comments === 0,
-      sort: `${this.data.sort_by}:${this.data.order}`
-    });
+    }, this.data);
+
+    // Do not use the bounding box if the user wants to do a global search
+    data['apply-bbox'] ? null : delete data.bbox; // eslint-disable-line no-unused-expressions
 
     // Remove unused properties that are already set by another value
-    delete data.bbox; // The bounding box is already known because of the 'map' parameter
     delete data.comments;
     delete data.sort_by;
     delete data.order;
@@ -358,7 +384,7 @@ export default class Query {
       delete data.map;
     }
 
-    url.search = Request.encodeQueryData(Util.clean(data, DEFAULTS.PERMALINK));
+    url.search = Request.encodeQueryData(Util.clean(data, DEFAULTS.UI));
     return url.toString();
   }
 
